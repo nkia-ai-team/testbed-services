@@ -131,7 +131,8 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
             # 2026-11-27: F72-H(후보, 고정 evaluation, 민원 포털 라우터 링크 끊김)가 끝에 붙어 F71-H 가 끝 6개에서 빠졌다.
             # 2026-11-27: F81-R(후보, 고정 evaluation, SMS 전용 민원 포털 운영자 색인 삭제)이 끝에 붙어 F79-R 이 끝 6개에서 빠졌다.
             # 2026-11-27: F82-R(후보, 고정 evaluation, 민원 포털 라우터 운영자 속도 제한)가 끝에 붙어 F80-R 이 끝 6개에서 빠졌다.
-            ["F69-P", "F72-P", "F80-P", "F72-H", "F81-R", "F82-R"],
+            # 2026-11-28: F83-R(후보, 고정 evaluation, 민원 포털 DB 서버 메모리 thrashing 먹통)가 끝에 붙어 F69-P 가 끝 6개에서 빠졌다.
+            ["F72-P", "F80-P", "F72-H", "F81-R", "F82-R", "F83-R"],
         )
 
         # F02-P was parked on 2026-07-27 (nothing in food queries

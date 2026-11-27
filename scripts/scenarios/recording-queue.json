@@ -85,6 +85,15 @@
       "requested_at": "2026-11-27",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F83-R",
+      "reason": "new",
+      "note": "새 테스트베드 첫 시나리오, 흔적 표 실측과 119 보강 뒤 녹화(지휘 세션 판단). 순서: ① 앱 DB 기다림 상한 3초(petition-context.xml)가 was01, was02 에 적용되고 재기준선이 끝난 것 ② 66 도우미(t4-hv-exec, t4-hv-exec-root)가 이 커밋의 판(vm-check, vm-hold, vm-reset, vm-release, vm-state 동작)으로 다시 설치되고 러너 쪽 civil-petition deploy 사본의 t4-hv-exec.sha256.json 이 같은 판인 것(어긋나면 러너 preflight 버전 표류 검사가 civil-petition 전체를 막는다)을 지휘 세션이 확인한 뒤에만 집어 간다. 시각: KST 09:00~21:00 에 시작한다(밤 보관 배치 02:20~05:00, 논리 백업 03:30 을 피하고, 상주 부하가 있는 시간에 먹통이 깊다). 녹화 판정: 녹화 구간 db01 syslog(119 syslog_local 과 syslog 감시)에 커널 OOM 줄('Out of memory', 'oom-kill')이 있으면 그 실행은 버린다(F80-P 와 같은 데이터에 cleanup 의 무조건 리셋이 인공 리셋 흔적만 더한 것이다, 설계 시트 §9-5). 주의: cleanup 은 db01 을 66 에서 리셋한다(VM 재부팅). 첫 실행에서 먹통이 실제로 나는지(SMS 보고 공백, 관리 ssh 무응답), 커널 OOM 이 끼어들지 않는지, 리셋 뒤 PostgreSQL 복구와 두 WAS 풀 회복을 본다(설계 시트 §9-5)",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-11-28",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }

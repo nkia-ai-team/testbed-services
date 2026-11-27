@@ -6,9 +6,10 @@
 # 하는 일(허용 표 밖은 모두 거절, 끝 코드 3):
 #   link-*   QMP set_link 로 VM NIC 링크를 내리고 올린다. qm 을 거치지 않아 Proxmox 작업 기록과 그 syslog 줄이 없다.
 #   qdisc-*  VM NIC 뒤 tap 장치의 송신 큐(게스트로 들어가는 방향)에 netem(지연, 손실, 속도) 하나를 건다.
+#   vm-*     QMP system_reset 으로 서버 VM 을 되살린다(게스트가 응답하지 않는 주입의 정리, 기한 되돌림).
 #   guards, tunnel, probe  러너 preflight 와 적용 직후 확인용 읽기.
 # 바꾸는 동작은 바꾸기 전에 가드를 건다(U8). 66 에는 부팅 규칙을 두지 않는다(설계 §3-5 규칙 5): 가드 파일은 /run 아래라
-# 재부팅에 사라지고, QMP 링크 상태와 tap 의 qdisc 도 VM 이나 66 이 다시 켜지면 사라진다.
+# 재부팅에 사라지고, QMP 링크 상태와 tap 의 qdisc 도 VM 이나 66 이 다시 켜지면 사라진다. VM 리셋은 남기는 상태가 없다.
 set -euo pipefail
 umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -18,6 +19,7 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 : "${OPSJOB_LOCK_DIR:=/run/hvjobs/locks}"
 qmp_dir="${HV_QMP_DIR:-/var/run/qemu-server}"
 link_dir="${HV_LINK_DIR:-/run/hvjobs/links}"
+vm_dir="${HV_VM_DIR:-/run/hvjobs/vms}"
 module_dir="${HV_MODULE_DIR:-/sys/module}"
 self="${HV_SELF:-/usr/local/sbin/t4-hv-exec-root}"
 wg_if="${HV_WG_IF:-wg0}"
@@ -30,6 +32,9 @@ monitor="@MONITOR@"
 LINKS="@LINKS@"
 # probe 가 핑할 수 있는 주소: 라우터 상향 주소와 서버 업무 주소(설계 §3-5 규칙 6 "적용 직후 확인"). build.py 가 채운다.
 PROBES="@PROBES@"
+# 되살릴 수 있는 VM(QMP system_reset, 사람이 하이퍼바이저에서 누르는 "Reset" 과 같음): 서버(웹, WAS, DB) VM 의 VMID.
+# build.py 가 인벤토리에서 채운다. 라우터, 부하기는 들 수 없다(라우터 재시작은 router.resource 의 몫, 설계 §3-5 규칙 3).
+RESETS="@RESETS@"
 root_handle=1a7e
 
 refuse() { echo "refused: $*" >&2; exit 3; }
@@ -136,9 +141,47 @@ qdisc_undo() {
 }
 qdisc_remove() { if [[ "$(qdisc_state)" == ours ]]; then tc qdisc del dev "$tap" root; fi; }
 
+# ---- VM 되살리기(QMP system_reset). 게스트 안 작업이 서버를 응답 없게 만드는 주입에서, 게스트에 닿지 않는 정리의 길이다.
+# vm-hold 는 VM 을 바꾸지 않는다: 게스트 쪽 변경 앞에 66 가드(정리가 오지 않으면 기한에 그 VM 을 리셋)와 표지를 건다.
+# vm-reset 은 표지가 있을 때만 리셋하고(정리가 두 번 와도 한 번만), vm-release 는 리셋 없이 표지와 가드만 거둔다
+# (게스트 쪽 변경이 시작되지 못한 실패 길). qm 을 거치지 않아 Proxmox 작업 기록과 그 syslog 줄이 없다.
+qmp_reset() {
+  python3 - "$qmp_dir/$1.qmp" <<'PY'
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(10)
+s.connect(sys.argv[1])
+f = s.makefile("rw")
+def reply():
+    while True:
+        line = f.readline()
+        if not line:
+            raise SystemExit("qmp closed")
+        msg = json.loads(line)
+        if "event" not in msg:
+            return msg
+reply()
+for cmd in ({"execute": "qmp_capabilities"}, {"execute": "system_reset"}):
+    f.write(json.dumps(cmd) + "\n")
+    f.flush()
+    msg = reply()
+    if "return" not in msg:
+        raise SystemExit(msg.get("error", {}).get("desc", "qmp error"))
+PY
+}
+vm_args() {
+  [[ ${#w[@]} -eq 2 && "${w[1]}" =~ ^[0-9]{3}$ ]] || refuse "vm actions take <vmid>"
+  vmid="${w[1]}"
+  [[ " $RESETS " == *" $vmid "* ]] || refuse "VM $vmid is not a VM an injection may reset"
+  job="vm-$vmid"; vmark="$vm_dir/$vmid"
+}
+vm_state() { if [[ -e "$vmark" ]]; then echo held; else echo free; fi; }
+vm_check() { [[ -S "$qmp_dir/$vmid.qmp" ]] || { echo "VM $vmid has no QMP socket (not running)" >&2; exit 1; }; }
+vm_undo() { printf 'printf %q | %q\n' "vm-restore $vmid\n" "$self"; }
+
 arm() { guard_arm "$job" "$expire_after" "$@"; }
-mkdir -p "$link_dir"
-chmod 700 "$link_dir"
+mkdir -p "$link_dir" "$vm_dir"
+chmod 700 "$link_dir" "$vm_dir"
 case "$action" in
   link-check) link_args; link_check; s=$(link_state); [[ "$s" == up ]] || { echo "link is $s" >&2; exit 1; }; echo up ;;
   link-state) link_args; link_state ;;
@@ -167,6 +210,24 @@ case "$action" in
     qdisc_remove
     s=$(qdisc_state); [[ "$s" != ours ]]
     guard_disarm "$job" ;;
+  vm-check) vm_args; vm_check; s=$(vm_state); [[ "$s" == free ]] || { echo "VM $vmid is $s" >&2; exit 1; }; echo free ;;
+  vm-state) vm_args; vm_state ;;
+  # 거는 순서: 확인, 가드, 표지. VM 은 바꾸지 않는다(바꾸는 것은 게스트 안 작업, 그 앞에 66 되살림을 건다).
+  vm-hold) vm_args; need_guard; vm_check
+    s=$(vm_state); [[ "$s" == free ]] || { echo "VM $vmid is $s" >&2; exit 1; }
+    arm "$(vm_undo)"
+    : >"$vmark" ;;
+  # 정리: 표지가 있으면 리셋하고 거둔다. 출력 한 줄: reset 또는 none.
+  vm-reset) vm_args; need_guard
+    guard_postpone "$job" "$guard_hold"
+    if [[ -e "$vmark" ]]; then vm_check; qmp_reset "$vmid"; rm -f "$vmark"; echo reset; else echo none; fi
+    guard_disarm "$job" ;;
+  vm-release) vm_args; need_guard
+    guard_postpone "$job" "$guard_hold"
+    rm -f "$vmark"
+    guard_disarm "$job" ;;
+  # 가드가 기한에 부르는 되돌림(가드 잠금을 쥔 채 돈다). t4-hv-exec 는 이 동작을 넘기지 않는다.
+  vm-restore) vm_args; if [[ -e "$vmark" && -S "$qmp_dir/$vmid.qmp" ]]; then qmp_reset "$vmid"; fi; rm -f "$vmark" ;;
   guards)
     [[ ${#w[@]} -eq 1 ]] || refuse "guards takes no arguments"
     shopt -s nullglob

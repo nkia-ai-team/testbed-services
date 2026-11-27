@@ -4514,6 +4514,8 @@ else:
             "F81-R",
             # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 WAS 쪽 포트 ens20 에 송신 속도 제한(tbf)을 단위를 잘못 적어 너무 낮게 걸어 바쁜 시간에 큐가 넘치고 포털 요청이 3초 넘게 걸리거나 503, 500(Google Compute Engine 2015-03-07 재구성, router.qdisc 새 모드 operator-rate 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
             "F82-R",
+            # 2026-11-28: 민원 포털(civil-petition) DB 서버 db01 에서 일회성 데이터 작업이 메모리를 거의 다 써 서버가 디스크 다시 읽기에 묶여 먹통(OOM 없음), 포털 503, 500, 66 하이퍼바이저 리셋으로 되살림(Wikimedia 2014-06-19 재구성, vmhost.job 새 모드 memload 와 첫 계약, 66 도우미 vm 동작). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F83-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
@@ -5084,10 +5086,6 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                                       "delay_ms": 100, "jitter_ms": 0, "loss_percent": 0, "rate_kbit": 0}),
         "router.resource": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "mode": "cpu",
                                          "cpu_workers": 2, "entries": 0, "runtime_seconds": 300}),
-        "vmhost.job": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "nightly-archive",
-                                    "description": "Nightly archive", "source_dir": "/var/log",
-                                    "output_dir": "/pgdata", "level": 6, "nice": 10, "runtime_seconds": 600,
-                                    "min_free_mib": 2048}),
         "vmhost.firewall": ("T4-GUARD", {"host": "192.168.127.21", "node": "web01", "table": "web-guard",
                                          "rules": [{"hook": "output", "proto": "tcp", "dst": "192.168.125.0/24",
                                                     "dport": 8080, "verdict": "drop"}], "log_prefix": ""}),
@@ -5140,6 +5138,11 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                                       "burst_kb": 32, "latency_ms": 50}),
         # vmlink.state: F72-H since 2026-11-27 (the router's DB side NIC); the VM executor tests still vary this sample.
         "vmlink.state": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 202, "net": "net0"}),
+        # vmhost.job: F83-R since 2026-11-28 (memload on db01); the VM executor tests still vary this archive sample.
+        "vmhost.job": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "nightly-archive",
+                                    "description": "Nightly archive", "source_dir": "/var/log",
+                                    "output_dir": "/pgdata", "level": 6, "nice": 10, "runtime_seconds": 600,
+                                    "min_free_mib": 2048}),
         # vmhost.stress: F80-P since 2026-11-25 (memprocs on dbsvr01); the VM executor tests still vary this cpu sample.
         "vmhost.stress": ("T4-GUARD", {"host": "192.168.127.31", "node": "was01", "mode": "cpu", "cpu_workers": 2,
                                        "mib": 0, "target_dir": "-", "watermark_percent": 0, "reserve_mib": 0,
@@ -5184,8 +5187,9 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         # 2026-11-27: vmlink.state(F72-H, civil-petition 66 hypervisor) joins: the first 66-side executor a scenario uses.
         # 2026-11-27: vmdb.lock(F81-R, civil-petition-sms dbsvr01, mode drop-index) joins.
         # 2026-11-27: router.qdisc(F82-R, civil-petition rt-core01, mode operator-rate) joins.
+        # 2026-11-28: vmhost.job(F83-R, civil-petition db01, mode memload, reset from the 66 helper) joins.
         self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress", "router.config",
-                                        "vmhost.stress", "vmlink.state", "vmdb.lock", "router.qdisc"})
+                                        "vmhost.stress", "vmlink.state", "vmdb.lock", "router.qdisc", "vmhost.job"})
         # A node executor no scenario uses yet is checked with a contract of its own shape, as long as
         # the registry lets it run on a node. Once a scenario uses it, the catalog check above takes over.
         node_locations = {lid for lid, loc in self.LOCATIONS.items() if loc.get("node")}
@@ -6317,7 +6321,8 @@ kill $server
         qmp = self.tmp / "qmp"
         qmp.mkdir(exist_ok=True)
         return {**self.env, "HV_HELPER_DIR": str(bindir), "HV_SUDO": str(self.tmp / "vm-bin" / "sudo"),
-                "HV_QMP_DIR": str(qmp), "HV_LINK_DIR": str(self.tmp / "links"), "HV_SELF": str(bindir / "t4-hv-exec-root"),
+                "HV_QMP_DIR": str(qmp), "HV_LINK_DIR": str(self.tmp / "links"), "HV_VM_DIR": str(self.tmp / "vms"),
+                "HV_SELF": str(bindir / "t4-hv-exec-root"),
                 "HV_MODULE_DIR": "/sys/module", "VM_SANDBOX_HV_FRONT": str(bindir / "t4-hv-exec")}
 
     def _qmp_server(self, vmid: int):
@@ -6434,6 +6439,83 @@ kill $server
         self.assertTrue(calls)
         self.assertTrue(all(l == "call hvjob@192.168.122.1 " for l in calls), calls)
 
+    def _qmp_reset_server(self, vmid: int, on_reset=None):
+        """A fake QMP socket that records commands and calls on_reset() at a system_reset (the VM reboots)."""
+        import socket
+        import threading
+        path = self.tmp / "qmp" / f"{vmid}.qmp"
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(str(path))
+        server.listen(4)
+        seen: list[dict] = []
+
+        def serve() -> None:
+            while True:
+                try:
+                    conn, _ = server.accept()
+                except OSError:
+                    return
+                f = conn.makefile("rw")
+                f.write(json.dumps({"QMP": {"version": {}}}) + "\n")
+                f.flush()
+                for line in f:
+                    msg = json.loads(line)
+                    seen.append(msg)
+                    if msg.get("execute") == "system_reset" and on_reset is not None:
+                        on_reset()
+                    f.write(json.dumps({"return": {}}) + "\n")
+                    f.flush()
+                conn.close()
+        threading.Thread(target=serve, daemon=True).start()
+        self.addCleanup(server.close)
+        return seen
+
+    def test_hypervisor_vm_hold_reset_release_self_recovery_and_refusals(self) -> None:
+        """vm-* (F83-R memload): hold arms 66's guard and marks the VM, changing nothing; reset resets only a held VM
+        (a second cleanup does not reset again); release takes the mark back without a reset; the guard's undo resets a
+        held VM by itself; only server VMs (web, WAS, DB) may be reset."""
+        env = self._helper_env()
+        env["HV_VM_DIR"] = str(self.tmp / "vms")
+        seen = self._qmp_reset_server(205)
+        resets = lambda: [m for m in seen if m.get("execute") == "system_reset"]  # noqa: E731
+        self.assertEqual(self._helper(env, "vm-check 205").stdout.strip(), "free")
+        done = self._helper(env, "vm-hold 205")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(resets(), [])
+        self.assertEqual(self._helper(env, "vm-state 205").stdout.strip(), "held")
+        self.assertEqual(node_guard_fakes.armed_seconds(env, "vm-205"), [1800])
+        self.assertEqual(self._helper(env, "vm-hold 205").returncode, 1)
+        self.assertEqual(self._helper(env, "vm-check 205").returncode, 1)
+        done = self._helper(env, "vm-reset 205")
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "reset"), done.stderr)
+        self.assertEqual(len(resets()), 1)
+        done = self._helper(env, "vm-reset 205")
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "none"), done.stderr)
+        self.assertEqual(len(resets()), 1)
+        self.assertEqual(self._helper(env, "vm-state 205").stdout.strip(), "free")
+        self.assertEqual(node_guard_fakes.unit_record(env, "vm-205"), [])
+        # The failure path: the job never started, so the mark goes without a reset.
+        self.assertEqual(self._helper(env, "vm-hold 205").returncode, 0)
+        self.assertEqual(self._helper(env, "vm-release 205").returncode, 0)
+        self.assertEqual(self._helper(env, "vm-state 205").stdout.strip(), "free")
+        self.assertEqual(len(resets()), 1)
+        # Self-recovery: no cleanup comes; the guard's undo resets the held VM.
+        self.assertEqual(self._helper(env, "vm-hold 205").returncode, 0)
+        fired = node_guard_fakes.fire(env, "vm-205", extra_env=env)
+        self.assertEqual(fired.returncode, 0, fired.stderr)
+        self.assertEqual(len(resets()), 2)
+        self.assertEqual(self._helper(env, "vm-state 205").stdout.strip(), "free")
+        # Refusals: the router, the load generator, other VMs, malformed, the undo verb, missing guard values.
+        for request in ("vm-hold 201", "vm-reset 201", "vm-hold 206", "vm-hold 999", "vm-hold 205 205", "vm-restore 205",
+                        "vm-hold 205; id", "vm-reset $(id)"):
+            with self.subTest(request=request):
+                before = len(seen)
+                done = self._helper(env, request)
+                self.assertEqual(done.returncode, 3, (done.stdout, done.stderr))
+                self.assertEqual(len(seen), before)
+        self.assertEqual(self._helper(env, "vm-hold 205", guard="").returncode, 3)
+        self.assertEqual(self._helper(env, "vm-state 205").stdout.strip(), "free")
+
     def test_helper_arms_before_every_change_and_the_installed_copy_is_the_build(self) -> None:
         """Design 6-1 "66 도우미 가드 시험" (1): in every branch that changes something, arm comes first.
         (2) the installed copy's checksum is the repository's: build.py --check, and version answers it."""
@@ -6442,7 +6524,7 @@ kill $server
         self.assertIn(self.common_guard().decode(), source)
         self.assertNotIn("@LINKS@", source)
         branches = dict(re.findall(r"(?m)^  ([a-z-]+)\) (.*?)(?=^  [a-z-]+\)|^  \*\))", source, re.S))
-        changes = {"link-down": "qmp_set_link", "qdisc-apply": "tc qdisc add"}
+        changes = {"link-down": "qmp_set_link", "qdisc-apply": "tc qdisc add", "vm-hold": ': >"$vmark"'}
         for action, change in changes.items():
             body = branches[action]
             self.assertLess(body.index('arm "$('), body.index(change), action)
@@ -6455,6 +6537,11 @@ kill $server
                 self.assertIn(action, ("link-cleanup", "qdisc-cleanup", "link-restore"), action)
                 if action != "link-restore":
                     self.assertLess(body.index("guard_postpone"), min(body.find(x) for x in ("link_restore", "qdisc_remove") if x in body))
+            # The VM reset (F83-R) is a cleanup or the guard's own undo, never a change of its own.
+            if "qmp_reset" in body:
+                self.assertIn(action, ("vm-reset", "vm-restore"), action)
+                if action == "vm-reset":
+                    self.assertLess(body.index("guard_postpone"), body.index("qmp_reset"))
         done = subprocess.run([sys.executable, str(HV_DIR / "build.py"), "--check"], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         expected = json.loads((HV_DIR / "t4-hv-exec.sha256.json").read_text())
@@ -6823,6 +6910,254 @@ kill $server
         self.assertEqual(stress.check_parameters(cpu), ["cpu", "2", "0", "-", "0", "0", "60"])
         with self.assertRaises(ExecutorError):
             stress.check_parameters(dict(cpu, revive_unit="tomcat10"))
+
+    def _memload_env(self, cache_mib: int) -> dict[str, str]:
+        """The sandbox for memload: 66's helper, a fake /proc/meminfo, a fake runuser (pg_isready answers while the
+        file pg-ready is there), a fake ss that logs, and short waits."""
+        env = self._helper_env()
+        env["HV_VM_DIR"] = str(self.tmp / "vms")
+        meminfo = self.tmp / "meminfo"
+        self._write_meminfo(cache_mib)
+        fakes = self.tmp / "memload-bin"
+        fakes.mkdir(exist_ok=True)
+        # ss: -K logs the drop; -H (the count after it) prints the lines in the file ss-left (none by default).
+        (fakes / "ss").write_text('#!/usr/bin/env bash\nif [[ "$1" == -H* ]]; then cat "$VM_SANDBOX/ss-left" 2>/dev/null; exit 0; fi\n'
+                                  'printf "%s\\n" "$*" >>"$VM_SANDBOX/ss-log"\n')
+        (fakes / "runuser").write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >>"$VM_SANDBOX/runuser-log"\n'
+                                       '[[ -e "$VM_SANDBOX/pg-ready" ]]\n')
+        for name in ("ss", "runuser"):
+            (fakes / name).chmod(0o755)
+        (self.tmp / "pg-ready").touch()
+        units = self.tmp / "units"
+        units.mkdir(exist_ok=True)
+        (units / "postgresql@16-main.service-state").write_text("active\n")
+        lru = self.tmp / "lru_gen"
+        lru.mkdir(exist_ok=True)
+        (lru / "min_ttl_ms").write_text("0\n")
+        procsys = self.tmp / "procsys" / "vm"
+        procsys.mkdir(parents=True, exist_ok=True)
+        (procsys / "min_free_kbytes").write_text("67584\n")
+        # The server's boot time: long before any run (a later test step moves it past the run, as a reboot does).
+        (self.tmp / "proc-stat").write_text("cpu 1 2 3\nbtime 1000\n")
+        (self.tmp / "kconfig").write_text("CONFIG_INET_DIAG=m\nCONFIG_INET_DIAG_DESTROY=y\n")
+        env.update({"OPSJOB_MEMINFO": str(meminfo), "OPSJOB_RUNUSER": str(fakes / "runuser"),
+                    "OPSJOB_LRU_GEN_DIR": str(lru), "OPSJOB_PROC_SYS": str(self.tmp / "procsys"),
+                    "OPSJOB_PROC_STAT": str(self.tmp / "proc-stat"), "OPSJOB_KERNEL_CONFIG": str(self.tmp / "kconfig"),
+                    "PATH": f"{fakes}:{env['PATH']}", "MEM_BACK_POLL": "0.2", "MEM_BACK_WAIT": "20",
+                    "OPSJOB_SERVICE_WAIT": "10"})
+        return env
+
+    def _write_meminfo(self, cache_mib: int, swap_kb: int = 0) -> None:
+        text = (f"MemTotal:        8131784 kB\nMemAvailable:    {cache_mib * 1024} kB\nActive(file):    {cache_mib * 512} kB\n"
+                f"Inactive(file):  {cache_mib * 512} kB\nSwapTotal:       {swap_kb} kB\n")
+        tmp = self.tmp / "meminfo.tmp"
+        tmp.write_text(text)
+        tmp.replace(self.tmp / "meminfo")
+
+    def _job_rss_kb(self) -> int:
+        pidfile = self.tmp / "units" / "petition-export.pid"
+        try:
+            status = Path(f"/proc/{int(pidfile.read_text())}/status").read_text()
+        except (OSError, ValueError):
+            return -1
+        line = [l for l in status.splitlines() if l.startswith("VmRSS")]
+        return int(line[0].split()[1]) if line else -1
+
+    def test_memload_holds_the_vm_runs_the_job_resets_from_66_and_drops_stale_connections(self) -> None:
+        """memload (F83-R): preflight asks the server and 66; run has 66 hold the VM (its guard first), then arms the
+        server's guard and starts the named job, which grows while the file cache is above its ceiling and hands a
+        piece back under its floor; cleanup has 66 reset the VM, drops the WAS servers' connections to the database
+        port, waits for the server and its service; a job that cannot start releases 66's hold without a reset."""
+        job = load("vmhost_job_executor")
+        params = dict(job.CONTRACTS["F83-R"], ramp_mib_s=4)
+        env = self._memload_env(cache_mib=1100)
+        seen = self._qmp_reset_server(205, on_reset=lambda: os.killpg(
+            int((self.tmp / "units" / "petition-export.pid").read_text()), signal.SIGKILL))
+        resets = lambda: [m for m in seen if m.get("execute") == "system_reset"]  # noqa: E731
+        hv_state = lambda: self._helper(env, "vm-state 205").stdout.strip()  # noqa: E731
+        try:
+            # Preflight: the file cache must leave room for the job, the server must have no swap, PostgreSQL up.
+            self._write_meminfo(1000)
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "preflight", env)
+            self.assertEqual(rc, 1)
+            self.assertIn("MiB of file cache to take", err)
+            self._write_meminfo(1100, swap_kb=1024)
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "preflight", env)[0], 1)
+            self._write_meminfo(1100)
+            # MGLRU's thrashing guard on would turn the hang into an OOM kill: refused.
+            (self.tmp / "lru_gen" / "min_ttl_ms").write_text("1000\n")
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "preflight", env)
+            self.assertEqual(rc, 1)
+            self.assertIn("lru_gen min_ttl_ms is 1000", err)
+            (self.tmp / "lru_gen" / "min_ttl_ms").write_text("0\n")
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "preflight", env)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("lru_gen min_ttl_ms 0, min_free_kbytes 67584", err)
+            # Run needs both control connections (the server's and 66's).
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "run", env)
+            self.assertEqual(rc, 1)
+            self.assertIn("control connection to 192.168.127.41 is down", err)
+            vm_sandbox.master(self.tmp, "192.168.127.41")
+            vm_sandbox.master(self.tmp, "192.168.122.1")
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "run", env)
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(hv_state(), "held")
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "vm-205"), [600 + 600])
+            start = [l for l in vm_sandbox.logged(self.tmp, "unit-log") if l.startswith("start ")][-1]
+            self.assertTrue(start.startswith("start petition-export|Yearly petition statistics export|RuntimeMaxSec=1560|"
+                                             "/usr/bin/python3 -c import ctypes"), start)
+            # The job's code spans lines in the log; its arguments close the last one.
+            self.assertTrue(any(l.endswith(" 32 48 4 1500") for l in vm_sandbox.logged(self.tmp, "unit-log")))
+            # The job grows while the cache is above its ceiling (1100 MiB here) ...
+            # (the interpreter alone is under 20 MiB resident even with its pages locked, so 24 MiB means a piece)
+            for _ in range(100):
+                if self._job_rss_kb() >= 24 * 1024:
+                    break
+                time.sleep(0.1)
+            self.assertGreaterEqual(self._job_rss_kb(), 24 * 1024)
+            self._write_meminfo(50)
+            time.sleep(1)
+            held = self._job_rss_kb()
+            time.sleep(1.5)
+            self.assertLess(abs(self._job_rss_kb() - held), 8 * 1024)  # inside the band it holds
+            # ... and hands a piece back when the cache falls under its floor (other processes growing).
+            self._write_meminfo(20)
+            for _ in range(200):
+                if self._job_rss_kb() < held - 8 * 1024:
+                    break
+                time.sleep(0.1)
+            self.assertLess(self._job_rss_kb(), held - 8 * 1024)
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "recovery", env)[0], 1)
+            # Cleanup: 66 resets the VM (the fake reboot ends the job), the WAS connections go, the server and
+            # PostgreSQL are back.
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("hypervisor: reset", err)
+            self.assertEqual(len(resets()), 1)
+            self.assertEqual(vm_sandbox.logged(self.tmp, "ss-log"),
+                             ["-K -tn dst 192.168.126.11 dport = :5432"] * 2)
+            calls = [l.split()[1] for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("call opsjob@192.168.127.3")]
+            self.assertEqual(calls, ["opsjob@192.168.127.31", "opsjob@192.168.127.32"])
+            self.assertIn("-u postgres -- pg_isready -q", vm_sandbox.logged(self.tmp, "runuser-log"))
+            self.assertEqual(hv_state(), "free")
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "recovery", env)[0], 0)
+            # A second cleanup does not reset again, and owes no drop.
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("hypervisor: none", err)
+            self.assertEqual(len(resets()), 1)
+            self.assertEqual(len(vm_sandbox.logged(self.tmp, "ss-log")), 2)
+            rebooted = lambda: (self.tmp / "proc-stat").write_text(f"btime {int(time.time()) + 5}\n")  # noqa: E731
+            # A drop that fails after the reset (a WAS unreachable) fails the cleanup and stays owed: the next cleanup
+            # gets none from 66, sees the server booted after the run, drops on both WAS servers (loose) and waits.
+            self._write_meminfo(1100)
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "run", env)[0], 0)
+            (self.tmp / "down-192.168.127.32").touch()
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertEqual(rc, 1)
+            self.assertIn("could not drop 192.168.127.32's connections", err)
+            self.assertIn("not dropped; cleanup again", err)
+            self.assertEqual(len(resets()), 2)
+            (self.tmp / "down-192.168.127.32").unlink()
+            rebooted()
+            (self.tmp / "ss-left").write_text("ESTAB 0 0 192.168.125.11:40000 192.168.126.11:5432\n")
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertEqual(rc, 0, err)  # loose: the server is back with new connections
+            self.assertIn("hypervisor: none", err)
+            self.assertIn("after the run", err)
+            self.assertEqual(len(resets()), 2)
+            self.assertEqual(len(vm_sandbox.logged(self.tmp, "ss-log")), 5)
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertEqual((rc, len(vm_sandbox.logged(self.tmp, "ss-log"))), (0, 5), err)
+            # Strict right after a reset: a connection still established fails the cleanup.
+            (self.tmp / "proc-stat").write_text("btime 1000\n")
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "run", env)[0], 0)
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertEqual(rc, 1)
+            self.assertIn("still has 1 connection(s) to 192.168.126.11:5432", err)
+            (self.tmp / "ss-left").unlink()
+            rebooted()
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)[0], 0)
+            self.assertEqual(len(resets()), 3)
+            # 66's guard resets the VM by itself at its deadline (no cleanup came): the mark written at the run still
+            # owes the drop, and the late cleanup (none from 66) drops after seeing the reboot. A kernel that cannot
+            # destroy sockets is said in the output.
+            (self.tmp / "proc-stat").write_text("btime 1000\n")
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "run", env)[0], 0)
+            fired = node_guard_fakes.fire(env, "vm-205", extra_env=env)
+            self.assertEqual(fired.returncode, 0, fired.stderr)
+            self.assertEqual(len(resets()), 4)
+            rebooted()
+            (self.tmp / "kconfig").write_text("CONFIG_INET_DIAG=m\n# CONFIG_INET_DIAG_DESTROY is not set\n")
+            before = len(vm_sandbox.logged(self.tmp, "ss-log"))
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("hypervisor: none", err)
+            self.assertIn("socket destroy (INET_DIAG_DESTROY) is no", err)
+            self.assertEqual(len(vm_sandbox.logged(self.tmp, "ss-log")), before + 2)
+            (self.tmp / "kconfig").write_text("CONFIG_INET_DIAG_DESTROY=y\n")
+            # The mark is there but the server never rebooted (66 let go without a reset): its connections are live,
+            # nothing is dropped.
+            (self.tmp / "proc-stat").write_text("btime 1000\n")
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "run", env)[0], 0)
+            self.assertEqual(self._helper(env, "vm-release 205").returncode, 0)
+            os.killpg(int((self.tmp / "units" / "petition-export.pid").read_text()), signal.SIGKILL)
+            before = len(vm_sandbox.logged(self.tmp, "ss-log"))
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("did not reboot since the run", err)
+            self.assertEqual(len(vm_sandbox.logged(self.tmp, "ss-log")), before)
+            self.assertEqual(len(resets()), 4)
+            # PostgreSQL not back within the wait: cleanup fails (DIRTY), loudly.
+            self._write_meminfo(1100)
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "run", env)[0], 0)
+            (self.tmp / "pg-ready").unlink()
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)
+            self.assertNotEqual(rc, 0)
+            self.assertIn("postgresql@16-main is not ready", err)
+            (self.tmp / "pg-ready").touch()
+            self.assertEqual(vm_sandbox.runner_call(job, "vmhost.job", params, "cleanup", env)[0], 0)
+            self.assertEqual(len(resets()), 5)
+            # A job that cannot start (PostgreSQL down at the run's own check) releases 66's hold without a reset.
+            (self.tmp / "units" / "postgresql@16-main.service-state").write_text("inactive\n")
+            rc, _, err = vm_sandbox.runner_call(job, "vmhost.job", params, "run", env)
+            self.assertEqual(rc, 1)
+            self.assertIn("releasing the hypervisor hold", err)
+            self.assertEqual(hv_state(), "free")
+            self.assertEqual(len(resets()), 5)
+            self.assertFalse((self.tmp / "ctl" / "memload-drop-205").exists())
+            self.assertEqual(node_guard_fakes.unit_record(env, "vm-205"), [])
+        finally:
+            pidfile = self.tmp / "units" / "petition-export.pid"
+            if pidfile.exists():
+                try:
+                    os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+                except (ProcessLookupError, ValueError, PermissionError):
+                    pass
+
+    def test_memload_parameters_name_the_t_database_vm_and_keep_the_archive_keys(self) -> None:
+        job = load("vmhost_job_executor")
+        contract = job.CONTRACTS["F83-R"]
+        self.assertEqual(job.check_parameters(contract),
+                         ["petition-export", "Yearly petition statistics export", "32", "48", "24", "1500",
+                          "postgresql@16-main", "205", "192.168.127.31,192.168.127.32", "192.168.126.11", "5432"])
+        for change in ({"vmid": 204}, {"node": "was01", "host": "192.168.127.31", "vmid": 203},
+                       {"node": "dbsvr01", "host": "192.168.133.31"}, {"file_floor_mib": 4},
+                       {"file_ceiling_mib": 40}, {"ramp_mib_s": 0}, {"runtime_seconds": 60}, {"unit": "tb-export"},
+                       {"source_dir": "/var/log"}):
+            with self.subTest(change=change):
+                with self.assertRaises(ExecutorError):
+                    job.check_parameters(dict(contract, **change))
+        # The floor goes down to 8 MiB (a server with few hot file pages), the ceiling stays 16 MiB above it.
+        self.assertEqual(job.check_parameters(dict(contract, file_floor_mib=8, file_ceiling_mib=24))[2:4], ["8", "24"])
+        # The archive job keeps its keys exactly; memload words do not leak into it.
+        archive = self.params("vmhost.job")
+        self.assertEqual(len(job.check_parameters(archive)), 8)
+        with self.assertRaises(ExecutorError):
+            job.check_parameters(dict(archive, vmid=205))
+        # Nothing on the VM names the scenario (design principle 8): the run's stdin carries no scenario id.
+        _, stdin = job.build_invocation(vm_sandbox.plan("vmhost.job", "F83-R", contract), "run")
+        self.assertNotIn(b"F83", stdin)
 
     def test_server_job_service_and_database_units(self) -> None:
         job = load("vmhost_job_executor")

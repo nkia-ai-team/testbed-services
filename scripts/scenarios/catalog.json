@@ -1867,6 +1867,18 @@
       "load_mode": "fixed",
       "injection_location": "civil-petition rt-core01",
       "prerequisite": ""
+    },
+    {
+      "id": "F83-R",
+      "slug": "f83-r-petition-db-job-memory-thrash-hypervisor-reset",
+      "profiles": [
+        "vmhost.job"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "civil-petition db01",
+      "prerequisite": ""
     }
   ]
 }

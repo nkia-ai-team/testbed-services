@@ -7,6 +7,7 @@
 # ssh 명령 문자열(SSH_ORIGINAL_COMMAND)은 보지 않는다. 동작 이름과 인자의 꼴만 여기서 거르고, 허용 표(VMID, NIC,
 # tap, 주소) 판정과 실제 변경은 sudo 로 부르는 t4-hv-exec-root 가 한다(같은 판정을 거기서 다시 한다).
 # version 만 root 없이 답한다(설치본 두 파일의 sha256, 러너 preflight 의 버전 표류 검사).
+# vm-* 은 서버 VM 리셋(정리의 길)이다. 기한 되돌림 vm-restore 는 root 도우미 안에서만 불리고 여기서는 넘기지 않는다.
 # 출력: 읽기 동작은 JSON 한 줄. 끝 코드: 0 성공, 1 실패, 3 거절.
 set -euo pipefail
 umask 077
@@ -33,7 +34,7 @@ case "$action" in
     a=$(sha256sum "$self_dir/t4-hv-exec" | cut -d' ' -f1)
     b=$(sha256sum "$root_helper" | cut -d' ' -f1)
     printf '{"files":{"t4-hv-exec":"%s","t4-hv-exec-root":"%s"}}\n' "$a" "$b" ;;
-  link-check|link-state|link-down|link-cleanup|qdisc-check|qdisc-state|qdisc-apply|qdisc-cleanup|guards|tunnel|probe)
+  link-check|link-state|link-down|link-cleanup|qdisc-check|qdisc-state|qdisc-apply|qdisc-cleanup|vm-check|vm-state|vm-hold|vm-reset|vm-release|guards|tunnel|probe)
     printf '%s\n%s\n' "$request" "$guard" | exec "$sudo_cmd" -n "$root_helper" ;;
   *) refuse "unknown action" ;;
 esac

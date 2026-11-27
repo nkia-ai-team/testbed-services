@@ -5983,10 +5983,30 @@
         "petition-sms-wassvr02",
         "petition-sms-dbsvr01"
       ],
-      "live_supported": false,
+      "live_supported": true,
       "default_queries": [
         "http.entry_health"
-      ]
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F83-R"
+        ]
+      },
+      "scenario_parameters": {
+        "F83-R": {
+          "host": "192.168.127.41",
+          "node": "db01",
+          "mode": "memload",
+          "unit": "petition-export",
+          "description": "Yearly petition statistics export",
+          "file_floor_mib": 32,
+          "file_ceiling_mib": 48,
+          "ramp_mib_s": 24,
+          "runtime_seconds": 1500,
+          "vmid": 205
+        }
+      },
+      "scenario_levels": {}
     },
     "vmhost.firewall": {
       "executor": "profiles/vmhost_firewall_executor.py",

@@ -94,7 +94,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-11-27: 145 → 146. F72-H(후보) 추가.
 # 2026-11-27: 146 → 147. F81-R(후보) 추가.
 # 2026-11-27: 147 → 148. F82-R(후보) 추가.
-[[ "$total" -eq 148 ]]
+# 2026-11-28: 148 → 149. F83-R(후보) 추가.
+[[ "$total" -eq 149 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -239,7 +240,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-11-27: ready 120→121. F72-H(민원 포털 라우터 DB 쪽 포트 ens21 링크가 끊겨 WAS 가 DB 에 닿지 못하고 3초 시간 초과로 포털 거의 모든 요청 503, 500, db01 은 관제에서 함께 사라짐) 후보 추가.
 # 2026-11-27: ready 121→122. F81-R(SMS 전용 민원 포털 DB 서버에서 운영자가 접수번호 유일 제약을 지워 조회마다 표 전체를 읽고 바쁜 시간에 DB CPU 100%, 풀 고갈로 포털 503, 500) 후보 추가.
 # 2026-11-27: ready 122→123. F82-R(민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 WAS 쪽 포트 ens20 에 송신 속도 제한(tbf)을 단위를 잘못 적어 너무 낮게 걸어 바쁜 시간에 큐가 넘치고 DB 응답과 요청이 늦어져 포털 요청이 3초 넘게 걸리거나 503, 500) 후보 추가.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 123 ]]
+# 2026-11-28: ready 123→124. F83-R(민원 포털(civil-petition) DB 서버 db01 에서 일회성 데이터 작업이 메모리를 거의 다 써 서버가 디스크 다시 읽기에 묶여 먹통, OOM 없이 포털 503, 500, 하이퍼바이저 리셋으로 되살림) 후보 추가.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 124 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -358,7 +360,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-11-27: 139 → 140. F72-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f72-h)으로 들어왔다.
 # 2026-11-27: 140 → 141. F81-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f81-r)으로 들어왔다.
 # 2026-11-27: 141 → 142. F82-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f82-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 142 ]]
+# 2026-11-28: 142 → 143. F83-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f83-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 143 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

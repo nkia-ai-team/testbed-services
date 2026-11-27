@@ -2,7 +2,7 @@
 """66 root 도우미 설치본(t4-hv-exec-root)을 틀(t4-hv-exec-root.in), U8 가드 함수, 인벤토리로 만든다.
 
 가드 함수의 정본은 scripts/scenarios/profiles/executor_common.py 의 GUARD_FUNCTIONS 하나다(설계 §6-1 "U8 시험과의 연결").
-허용 표(VMID, NIC, tap)와 probe 주소는 인벤토리에서 채운다: 라우터의 하위 NIC(downlink), 서버(웹, WAS, DB)의 기본 경로 NIC,
+허용 표(VMID, NIC, tap), 리셋 허용 VM(서버 VMID)과 probe 주소는 인벤토리에서 채운다: 라우터의 하위 NIC(downlink), 서버(웹, WAS, DB)의 기본 경로 NIC,
 라우터 상향 주소와 서버 업무 주소. 66 도우미는 하나라 T 인벤토리로 만들 때 S 인벤토리(s.json)의 서버 업무 주소도 probe 표 뒤에
 붙인다(S 문서 spec-testbed-sms-only.md §3-6 규칙 3 "적용 직후 66 에서 그 서버 업무 주소 핑"). S 는 66 쪽 실행기가 없으므로(1차)
 허용 표에는 들지 않는다. 설치본은 그 고정 표를 가진 채 66 에 놓인다(설계 §3-5 규칙 2 "코드 안 고정 표"). 주소와
@@ -79,9 +79,17 @@ def s_probes(s_inv: dict) -> list[str]:
             for nic in host["nics"] if nic.get("gateway") and nic["net"] not in mgmt]
 
 
+def resets(inv: dict) -> list[str]:
+    """리셋을 허용할 VM(QMP system_reset): 서버(웹, WAS, DB) VM 의 VMID. 라우터와 부하기는 들지 않는다."""
+    vmids = [str(host["vmid"]) for host in inv["hosts"] if host["role"] in SERVER_ROLES]
+    if not vmids:
+        raise SystemExit("인벤토리에 서버 VM 이 없다")
+    return vmids
+
+
 def render(inv: dict) -> bytes:
     text = TEMPLATE.read_text(encoding="utf-8")
-    for mark in ("@GUARD_FUNCTIONS@\n", "@LINKS@", "@PROBES@", "@MONITOR@", "@TUNNEL_SRC@"):
+    for mark in ("@GUARD_FUNCTIONS@\n", "@LINKS@", "@PROBES@", "@RESETS@", "@MONITOR@", "@TUNNEL_SRC@"):
         if text.count(mark) != 1:
             raise SystemExit(f"{TEMPLATE}: {mark.strip()} 자리가 하나가 아님")
     links, probes = tables(inv)
@@ -90,6 +98,7 @@ def render(inv: dict) -> bytes:
     if len(ends) != 1:
         raise SystemExit("터널 대역에서 66 끝을 하나로 정할 수 없다")
     text = (text.replace("@LINKS@", "\n".join(links)).replace("@PROBES@", " ".join(probes))
+            .replace("@RESETS@", " ".join(resets(inv)))
             .replace("@MONITOR@", monitor).replace("@TUNNEL_SRC@", ends[0]))
     return text.encode().replace(b"@GUARD_FUNCTIONS@\n", guard_functions())
 

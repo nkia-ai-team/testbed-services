@@ -88,6 +88,9 @@ PROFILE_PREFLIGHTS = {
     "vmdb.lock": "db-inverse-ddl-ready",
     # The router's queue (mode operator-rate, F82-R) is deleted over its management NIC, which no downlink queue carries.
     "router.qdisc": "network-oob-recovery",
+    # A server's named job (mode memload, F83-R) leaves the server unable to answer, so its undo is a reset of that VM from
+    # 66 through the forced-command helper (QMP), out of band; the job goes with the old boot and the role's service starts.
+    "vmhost.job": "host-placement-and-oob-recovery",
     # The inverse of removing node images is loading the same images (same image IDs) back
     # from 109 docker over SSH, after which the restarted Deployment must have its pod again.
     "host.image": "kubernetes-recovery-capacity",

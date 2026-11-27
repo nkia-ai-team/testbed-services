@@ -93,6 +93,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "vmdb.lock",
                 # 2026-11-27: F82-R — 민원 포털 라우터 rt-core01 의 WAS 쪽 NIC ens20 에 운영자가 sudo tc 로 tbf 속도 제한 넣기와 지우기.
                 "router.qdisc",
+                # 2026-11-28: F83-R — 민원 포털 DB 서버 db01 에서 이름 붙은 유닛으로 메모리 작업 시작, cleanup 은 66 도우미의 VM 리셋.
+                "vmhost.job",
             },
         )
 

@@ -158,7 +158,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-11-27: 145 → 146. F72-H(후보) 추가. vmlink.state 에 첫 계약(프로파일 수는 그대로).
         # 2026-11-27: 146 → 147. F81-R(후보) 추가. vmdb.lock 에 새 모드 drop-index 와 첫 계약(프로파일 수는 그대로).
         # 2026-11-27: 147 → 148. F82-R(후보) 추가. router.qdisc 에 새 모드 operator-rate 와 첫 계약(프로파일 수는 그대로).
-        self.assertEqual(len(self.catalog["scenarios"]), 148)
+        # 2026-11-28: 148 → 149. F83-R(후보) 추가. vmhost.job 에 새 모드 memload 와 첫 계약, 66 도우미에 vm 동작(프로파일 수는 그대로).
+        self.assertEqual(len(self.catalog["scenarios"]), 149)
         # 2026-11-19: 시나리오 수는 그대로. 프로파일 36 → 48(civil-petition VM 실행기 12개 신설, v4 T4S. 계약 0개라 시나리오가 아직 쓰지 않는다).
         self.assertEqual(len(self.profiles["profiles"]), 48)
         known = set(self.profiles["profiles"])
@@ -378,6 +379,8 @@ class RegistryContractTests(unittest.TestCase):
             "F81-R",
             # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 WAS 쪽 포트 ens20 에 송신 속도 제한(tbf)을 단위를 잘못 적어 너무 낮게 걸어 바쁜 시간에 큐가 넘치고 DB 응답과 요청이 늦어져 포털 요청이 3초 넘게 걸리거나 503, 500(Google Compute Engine 2015-03-07 재구성, router.qdisc 새 모드 operator-rate 와 첫 계약).
             "F82-R",
+            # 2026-11-28: 민원 포털(civil-petition) DB 서버 db01 에서 일회성 데이터 작업이 메모리를 거의 다 쥐고 파일 캐시를 조금만 남겨 서버가 디스크 다시 읽기에 묶여 먹통(OOM 없음), 포털 503, 500, 66 하이퍼바이저 리셋으로 되살림(Wikimedia 2014-06-19 재구성, vmhost.job 새 모드 memload 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F83-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -952,6 +955,8 @@ class RegistryContractTests(unittest.TestCase):
             "F81-R",
             # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 WAS 쪽 포트 ens20 에 송신 속도 제한(tbf)을 단위를 잘못 적어 너무 낮게 걸어 바쁜 시간에 큐가 넘치고 DB 응답과 요청이 늦어져 포털 요청이 3초 넘게 걸리거나 503, 500(Google Compute Engine 2015-03-07 재구성, router.qdisc 새 모드 operator-rate 와 첫 계약).
             "F82-R",
+            # 2026-11-28: 민원 포털(civil-petition) DB 서버 db01 에서 일회성 데이터 작업이 메모리를 거의 다 쥐고 파일 캐시를 조금만 남겨 서버가 디스크 다시 읽기에 묶여 먹통(OOM 없음), 포털 503, 500, 66 하이퍼바이저 리셋으로 되살림(Wikimedia 2014-06-19 재구성, vmhost.job 새 모드 memload 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F83-R",
             },
         )
         self.assertEqual(
@@ -1170,6 +1175,8 @@ class RegistryContractTests(unittest.TestCase):
             "F81-R",
             # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 WAS 쪽 포트 ens20 에 송신 속도 제한(tbf)을 단위를 잘못 적어 너무 낮게 걸어 바쁜 시간에 큐가 넘치고 DB 응답과 요청이 늦어져 포털 요청이 3초 넘게 걸리거나 503, 500(Google Compute Engine 2015-03-07 재구성, router.qdisc 새 모드 operator-rate 와 첫 계약).
             "F82-R",
+            # 2026-11-28: 민원 포털(civil-petition) DB 서버 db01 에서 일회성 데이터 작업이 메모리를 거의 다 쥐고 파일 캐시를 조금만 남겨 서버가 디스크 다시 읽기에 묶여 먹통(OOM 없음), 포털 503, 500, 66 하이퍼바이저 리셋으로 되살림(Wikimedia 2014-06-19 재구성, vmhost.job 새 모드 memload 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F83-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1392,8 +1399,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-11-27: F72-H(후보, 고정 evaluation, 민원 포털 라우터 링크 끊김)가 끝에 붙어 F79-R 이 끝 5개에서 빠졌다.
         # 2026-11-27: F81-R(후보, 고정 evaluation, SMS 전용 민원 포털 운영자 색인 삭제)이 끝에 붙어 F80-R 이 끝 5개에서 빠졌다.
         # 2026-11-27: F82-R(후보, 고정 evaluation, 민원 포털 라우터 운영자 속도 제한)이 끝에 붙어 F69-P 가 끝 5개에서 빠졌다.
+        # 2026-11-28: F83-R(후보, 고정 evaluation, 민원 포털 DB 서버 메모리 thrashing 먹통)가 끝에 붙어 F72-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F72-P", "F80-P", "F72-H", "F81-R", "F82-R"])
+                         ["F80-P", "F72-H", "F81-R", "F82-R", "F83-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
