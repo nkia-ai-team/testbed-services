@@ -23,6 +23,13 @@ SPEC = importlib.util.spec_from_file_location("profile_control_compiler", ROOT /
 assert SPEC and SPEC.loader
 compiler = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(compiler)
+# The executor's timeouts (executor_common): a cleanup waits for the manifest's cleanup bound plus a grace, the rest
+# for the old fixed 1200 s (v4 REVIVE).
+TIMEOUTS_SPEC = importlib.util.spec_from_file_location("profile_control_timeouts", ROOT / "profiles" / "executor_common.py")
+assert TIMEOUTS_SPEC and TIMEOUTS_SPEC.loader
+timeouts = importlib.util.module_from_spec(TIMEOUTS_SPEC)
+sys.path.insert(0, str(ROOT / "profiles"))
+TIMEOUTS_SPEC.loader.exec_module(timeouts)
 
 
 class ControlError(RuntimeError):
@@ -44,9 +51,9 @@ class Result(NamedTuple):
     stderr: str = ""
 
 
-def _run(argv: Sequence[str]) -> Result:
+def _run(argv: Sequence[str], timeout: float = 1200) -> Result:
     completed = subprocess.run(
-        list(argv), check=False, capture_output=True, text=True, timeout=1200
+        list(argv), check=False, capture_output=True, text=True, timeout=timeout
     )
     return Result(completed.returncode, completed.stdout, completed.stderr)
 
@@ -306,7 +313,8 @@ class ProfileController:
             effect_started = self.clock() if action == "apply" else None
             if action != "apply":
                 fcntl.flock(lease_lock.fileno(), fcntl.LOCK_UN)
-            completed = self.runner([str(executor), verb, *common])
+            completed = self.runner([str(executor), verb, *common],
+                                    timeout=timeouts.dispatch_timeout_seconds(refreshed, verb))
             if action == "apply":
                 fcntl.flock(lease_lock.fileno(), fcntl.LOCK_UN)
             now = self.clock()

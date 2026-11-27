@@ -28,6 +28,13 @@ COMPILER_SPEC = importlib.util.spec_from_file_location(
 assert COMPILER_SPEC and COMPILER_SPEC.loader
 compiler = importlib.util.module_from_spec(COMPILER_SPEC)
 COMPILER_SPEC.loader.exec_module(compiler)
+# The executor's timeouts (executor_common): a cleanup waits for the manifest's cleanup bound plus a grace, the rest
+# for the old fixed 1200 s (v4 REVIVE).
+TIMEOUTS_SPEC = importlib.util.spec_from_file_location("trusted_dispatcher_timeouts", ROOT / "profiles" / "executor_common.py")
+assert TIMEOUTS_SPEC and TIMEOUTS_SPEC.loader
+timeouts = importlib.util.module_from_spec(TIMEOUTS_SPEC)
+sys.path.insert(0, str(ROOT / "profiles"))
+TIMEOUTS_SPEC.loader.exec_module(timeouts)
 
 
 class DispatchError(RuntimeError):
@@ -44,9 +51,9 @@ Invoker = Callable[[Sequence[str]], InvocationResult]
 Compiler = Callable[[str], dict[str, Any]]
 
 
-def subprocess_invoker(argv: Sequence[str]) -> InvocationResult:
+def subprocess_invoker(argv: Sequence[str], timeout: float = 1200) -> InvocationResult:
     completed = subprocess.run(
-        list(argv), check=False, capture_output=True, text=True, timeout=1200
+        list(argv), check=False, capture_output=True, text=True, timeout=timeout
     )
     return InvocationResult(completed.returncode, completed.stdout, completed.stderr)
 
@@ -168,7 +175,7 @@ class Dispatcher:
             "--live",
         ]
         try:
-            result = self.invoker(argv)
+            result = self.invoker(argv, timeout=timeouts.dispatch_timeout_seconds(plan, action))
         except Exception as exc:
             raise DispatchError(
                 f"profile {profile_id} {action} invocation failed under fence {fence}: {exc}"

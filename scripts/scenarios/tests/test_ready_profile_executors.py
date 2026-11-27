@@ -6610,6 +6610,43 @@ kill $server
                 with self.assertRaises(ExecutorError):
                     stress.check_parameters(dict(base, revive_unit=other))
 
+    def test_memprocs_revive_bounds_fit_the_f80p_cleanup_bound(self) -> None:
+        """v4 REVIVE: one cleanup bound for the executor and the dispatchers: the manifest's cleanup timeout, never below
+        480 s (the common in-node cleanup wait 420 s plus 60). F80-P says 5 minutes, so 480 s, not the old fixed 900 s;
+        the dispatcher waits 540 s, not 1200. The bring-back's total (180 s) plus the job's own stop (TERM, 30 s, then
+        KILL) fits even inside the manifest's 5 minutes."""
+        common = sys.modules["executor_common"]
+        plan = compiler.compile_plan("f80-p-petition-db-job-memory-oom-stops-postgres")
+        cleanup = common.plan_cleanup_seconds(plan)
+        self.assertEqual(cleanup, 300)
+        self.assertEqual(common.executor_timeout_seconds(plan, "cleanup"), 480)
+        self.assertEqual(common.executor_timeout_seconds(plan, "run"), common.EXECUTE_TIMEOUT_SECONDS)
+        self.assertEqual(common.dispatch_timeout_seconds(plan, "cleanup"), 540)
+        longer = json.loads(json.dumps(plan))
+        longer["controller"]["runtime"]["cleanup"]["timeout"] = "12m"
+        self.assertEqual((common.executor_timeout_seconds(longer, "cleanup"), common.dispatch_timeout_seconds(longer, "cleanup")),
+                         (720, 780))
+        self.assertEqual(common.dispatch_timeout_seconds(plan, "run"), 1200)
+        no_bound = json.loads(json.dumps(plan))
+        del no_bound["controller"]["runtime"]["cleanup"]["timeout"]
+        self.assertEqual(common.executor_timeout_seconds(no_bound, "cleanup"), common.EXECUTE_TIMEOUT_SECONDS)
+        self.assertEqual(common.dispatch_timeout_seconds(no_bound, "cleanup"), 1200)
+        # The floor covers every executor's in-node cleanup wait (cleanup_wait=..., CLEANUP_WAIT) with 60 s to spare.
+        waits = []
+        for path in PROFILES.glob("*.py"):
+            text = path.read_text()
+            waits += [int(w) for w in re.findall(r'cleanup_wait=(\d+)s', text)]
+            waits += [int(w) for w in re.findall(r'CLEANUP_WAIT = b"(\d+)s"', text)]
+        self.assertGreater(len(waits), 10)
+        self.assertLessEqual(max(waits) + 60, common.CLEANUP_FLOOR_SECONDS)
+        body = load("vmhost_stress_executor").NODE_BODY.decode()
+        total = int(re.search(r'revive_total="\$\{REVIVE_TOTAL:-(\d+)\}"', body).group(1))
+        stop_wait = int(re.search(r'revive_stop_wait="\$\{REVIVE_STOP_WAIT:-(\d+)\}"', body).group(1))
+        group_stop = 30   # GROUP_FUNCTIONS group_stop: TERM, up to 30 one-second waits, then KILL
+        self.assertIn("for _ in $(seq 1 30); do group_live || break; sleep 1; done", vm_common.GROUP_FUNCTIONS.decode())
+        self.assertLess(stop_wait, total)
+        self.assertLess(total + group_stop + 30, cleanup)   # 30 s of room for ssh and the state reads
+
     def test_memprocs_parameters_name_the_role_service_and_even_workers(self) -> None:
         stress = load("vmhost_stress_executor")
         good = {"host": "192.168.133.31", "node": "dbsvr01", "mode": "memprocs", "processes": 6, "mib": 6144,

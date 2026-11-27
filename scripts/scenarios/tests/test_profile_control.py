@@ -20,9 +20,11 @@ SPEC.loader.exec_module(module)
 class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.timeouts: list[tuple[str, float | None]] = []
 
-    def __call__(self, argv: Sequence[str]):
+    def __call__(self, argv: Sequence[str], timeout: float | None = None):
         self.calls.append(list(argv))
+        self.timeouts.append((list(argv)[1], timeout))
         return module.Result(0)
 
 
@@ -111,7 +113,7 @@ class ProfileControlTests(unittest.TestCase):
     def test_apply_timestamp_is_conservative_effect_start_not_process_completion(self) -> None:
         started = self.now
 
-        def delayed(argv: Sequence[str]):
+        def delayed(argv: Sequence[str], timeout: float | None = None):
             if argv[1] == "run":
                 self.now += timedelta(seconds=12)
             return module.Result(0)
@@ -157,7 +159,7 @@ class ProfileControlTests(unittest.TestCase):
     def test_apply_mutation_holds_terminal_fence_but_preflight_does_not(self) -> None:
         calls: list[list[str]] = []
 
-        def lock_probe(argv: Sequence[str]):
+        def lock_probe(argv: Sequence[str], timeout: float | None = None):
             calls.append(list(argv))
             lock_path = self.coordinator.with_suffix(self.coordinator.suffix + ".lock")
             with lock_path.open("a+") as handle:
@@ -178,7 +180,7 @@ class ProfileControlTests(unittest.TestCase):
         self.assertEqual([call[1] for call in calls], ["preflight", "run"])
 
     def _apply_with_preflight(self, result) -> str:
-        def runner(argv: Sequence[str]):
+        def runner(argv: Sequence[str], timeout: float | None = None):
             return result if argv[1] == "preflight" else module.Result(0)
 
         self.controller.runner = runner
@@ -268,7 +270,7 @@ class ProfileControlTests(unittest.TestCase):
         calls: list[list[str]] = []
         outcome = module.Result(9, stderr="cleanup failed")
 
-        def runner(argv: Sequence[str]):
+        def runner(argv: Sequence[str], timeout: float | None = None):
             calls.append(list(argv))
             return outcome
 
@@ -300,7 +302,7 @@ class ProfileControlTests(unittest.TestCase):
         calls: list[list[str]] = []
         outcome = module.Result(9, stderr="cleanup failed")
 
-        def runner(argv: Sequence[str]):
+        def runner(argv: Sequence[str], timeout: float | None = None):
             calls.append(list(argv))
             return outcome
 
@@ -336,7 +338,7 @@ class ProfileControlTests(unittest.TestCase):
         # plan) must not end the run clean. The reason is the recovery's stderr.
         calls: list[list[str]] = []
 
-        def runner(argv: Sequence[str]):
+        def runner(argv: Sequence[str], timeout: float | None = None):
             calls.append(list(argv))
             if argv[1] == "recovery":
                 return module.Result(1, stderr="sql_id byb2y2hv7p4ag came back on plan 847607780, expected 2603328921\n")

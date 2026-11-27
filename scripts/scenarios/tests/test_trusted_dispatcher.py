@@ -29,12 +29,14 @@ COMPILER_SPEC.loader.exec_module(compile_plan_module)
 class FakeInvoker:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.timeouts: list[tuple[str, str, float | None]] = []
         self.failures: dict[tuple[str, str], int] = {}
         self.on_call = None
 
-    def __call__(self, argv: Sequence[str]):
+    def __call__(self, argv: Sequence[str], timeout: float | None = None):
         call = list(argv)
         self.calls.append(call)
+        self.timeouts.append((Path(call[0]).name, call[1], timeout))
         if self.on_call:
             self.on_call(call)
         profile = Path(call[0]).name
@@ -119,6 +121,25 @@ class TrustedDispatcherTests(unittest.TestCase):
                     ("db_lock_executor.py", "recovery"),
                 ],
             )
+
+    def test_cleanup_waits_for_the_manifest_cleanup_bound_plus_grace(self) -> None:
+        """v4 REVIVE: the dispatcher's wait for a cleanup is the manifest's cleanup timeout plus a grace (the executor
+        ends its own group at the manifest's bound first), every other action keeps the old 1200 s."""
+        slug = "f01-r-pg-lock-checkout"
+        with tempfile.TemporaryDirectory() as temporary:
+            invoker = FakeInvoker()
+            dispatcher = dispatcher_module.Dispatcher(state_dir=Path(temporary), invoker=invoker)
+            plan = compile_plan_module.compile_plan(slug)
+            dispatcher.dispatch(slug=slug, action="run", digest=plan["plan_digest"],
+                                confirmation=dispatcher.confirmation(plan))
+            cleanup = max(dispatcher_module.timeouts.duration_seconds(plan["controller"]["runtime"]["cleanup"]["timeout"]),
+                          480)
+            waits = {(profile, action): timeout for profile, action, timeout in invoker.timeouts}
+            self.assertEqual(waits[("db_lock_executor.py", "cleanup")], cleanup + 60)
+            self.assertEqual(waits[("load_north_south_executor.py", "cleanup")], cleanup + 60)
+            for key in (("db_lock_executor.py", "run"), ("db_lock_executor.py", "preflight"),
+                        ("db_lock_executor.py", "recovery")):
+                self.assertEqual(waits[key], 1200, key)
 
     def test_adaptive_load_refuses_one_shot_dispatch(self) -> None:
         # 2026-08-20: F07-H 가 고정 승격돼 더는 adaptive 가 아니다. 라이브 adaptive 로

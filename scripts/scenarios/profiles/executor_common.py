@@ -354,6 +354,48 @@ def node_guard_function(node_command: str) -> bytes:
 
 
 EXECUTE_TIMEOUT_SECONDS = 900
+# The dispatchers (profile-control.py, trusted_dispatcher.py) wait for an executor this long unless the plan says
+# otherwise, and give an executor whose bound comes from the plan this much more, so the executor ends its own process
+# group first (execute) and reports, rather than being cut by its caller (v4 REVIVE).
+DISPATCH_DEFAULT_SECONDS = 1200
+DISPATCH_GRACE_SECONDS = 60
+# A cleanup bound never goes below this: most cleanups wait in the node for a rollout or a unit for up to
+# cleanup_wait=420s (k8s.*, app_release*, load.*, host.job, ...), and 29 manifests say 5m. Cutting those at 5 minutes
+# would turn a slow but successful cleanup into DIRTY. 420 s plus 60 s for ssh, the state reads and the recovery.
+CLEANUP_FLOOR_SECONDS = 480
+
+
+def plan_cleanup_seconds(plan: dict[str, Any]) -> int | None:
+    """The manifest's cleanup timeout (controller.runtime.cleanup.timeout) in seconds, or None when it has none."""
+    value = plan.get("controller", {}).get("runtime", {}).get("cleanup", {}).get("timeout")
+    if value is None:
+        return None
+    seconds = duration_seconds(value)
+    if seconds <= 0:
+        raise ExecutorError("cleanup timeout must be positive")
+    return seconds
+
+
+def cleanup_bound_seconds(plan: dict[str, Any]) -> int | None:
+    """The one cleanup bound the executor and both dispatchers use: the manifest's cleanup timeout, never below
+    CLEANUP_FLOOR_SECONDS; None when the manifest has none (v4 REVIVE)."""
+    cleanup = plan_cleanup_seconds(plan)
+    return None if cleanup is None else max(cleanup, CLEANUP_FLOOR_SECONDS)
+
+
+def executor_timeout_seconds(plan: dict[str, Any], action: str) -> int:
+    """How long an executor action may run. cleanup follows the manifest's cleanup bound (cleanup_bound_seconds) when the
+    plan has one (v4 REVIVE: it was not applied, only the dispatcher's fixed 1200 s was). Everything else, and a plan
+    without one, keeps EXECUTE_TIMEOUT_SECONDS."""
+    bound = cleanup_bound_seconds(plan) if action == "cleanup" else None
+    return EXECUTE_TIMEOUT_SECONDS if bound is None else bound
+
+
+def dispatch_timeout_seconds(plan: dict[str, Any], action: str) -> int:
+    """How long a dispatcher waits for an executor action: the cleanup bound plus a grace (the executor ends its own
+    group first and reports), the dispatchers' old fixed 1200 s otherwise."""
+    bound = cleanup_bound_seconds(plan) if action == "cleanup" else None
+    return DISPATCH_DEFAULT_SECONDS if bound is None else bound + DISPATCH_GRACE_SECONDS
 STOP_GRACE_SECONDS = 2
 
 
@@ -464,7 +506,7 @@ def main_for(profile_id: str, builder: Builder, validator: Validator) -> int:
         print(json.dumps(output, sort_keys=True))
         return 0
     authorize_live(plan, args.plan_digest, args.confirm)
-    return execute(argv, stdin)
+    return execute(argv, stdin, timeout=executor_timeout_seconds(selected_plan, remote_action))
 
 
 def cli(profile_id: str, builder: Builder, validator: Validator) -> None:
