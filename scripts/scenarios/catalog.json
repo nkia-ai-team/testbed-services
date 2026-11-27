@@ -1843,6 +1843,18 @@
       "load_mode": "fixed",
       "injection_location": "civil-petition hypervisor",
       "prerequisite": ""
+    },
+    {
+      "id": "F81-R",
+      "slug": "f81-r-petition-receipt-key-drop-db-cpu",
+      "profiles": [
+        "vmdb.lock"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "civil-petition-sms dbsvr01",
+      "prerequisite": ""
     }
   ]
 }

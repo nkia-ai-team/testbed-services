@@ -4510,6 +4510,8 @@ else:
             "F80-P",
             # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 의 DB 쪽 포트 ens21 링크가 끊겨(변경 아님) DB 망이 라우터에서 빠지고 WAS 두 대의 DB 연결이 대답 없이 버려져 3초 시간 초과, 포털 거의 모든 요청 503, 500, db01 은 관제에서 함께 사라짐(Magic Pages 2026-10-20 재구성, vmlink.state 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
             "F72-H",
+            # 2026-11-27: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 운영자가 sudo -u postgres psql 로 접수번호 유일 제약을 지워 조회마다 표 전체를 읽고 바쁜 시간에 DB CPU 100%, 풀 고갈로 포털 503, 500(Chargebee 2018-03-02 재구성, vmdb.lock 새 모드 drop-index 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F81-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
@@ -5092,9 +5094,6 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                                                     "dport": 8080, "verdict": "drop"}], "log_prefix": ""}),
         "vm.service": ("T4-GUARD", {"host": "192.168.127.31", "node": "was01", "unit": "tomcat10", "action": "stop",
                                     "file": "-", "match": "-", "replace": "-", "release": "-", "release_sha256": "-"}),
-        "vmdb.lock": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "table-maintenance",
-                                   "description": "Table maintenance", "app_name": "maint", "table": "petition",
-                                   "lock_mode": "ACCESS EXCLUSIVE", "runtime_seconds": 300}),
         "vmdb.workload": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "monthly-report",
                                        "description": "Monthly report", "app_name": "report",
                                        "statement": "petition-title-scan", "sessions": 4, "runtime_seconds": 300}),
@@ -5132,6 +5131,10 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                                        "rules": [{"hook": "forward", "proto": "tcp", "src": "192.168.124.0/24",
                                                   "dst": "192.168.125.0/24", "dport": 8080, "verdict": "drop"}],
                                        "routes": [], "sysctls": {}, "log_prefix": ""}),
+        # vmdb.lock: F81-R since 2026-11-27 (mode drop-index on dbsvr01); the VM executor tests still vary this lock sample.
+        "vmdb.lock": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "table-maintenance",
+                                   "description": "Table maintenance", "app_name": "maint", "table": "petition",
+                                   "lock_mode": "ACCESS EXCLUSIVE", "runtime_seconds": 300}),
         # vmlink.state: F72-H since 2026-11-27 (the router's DB side NIC); the VM executor tests still vary this sample.
         "vmlink.state": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 202, "net": "net0"}),
         # vmhost.stress: F80-P since 2026-11-25 (memprocs on dbsvr01); the VM executor tests still vary this cpu sample.
@@ -5176,8 +5179,9 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         # 2026-11-25: router.config(F72-P, civil-petition rt-core01) joins: the first VM executor a scenario uses.
         # 2026-11-25: vmhost.stress(F80-P, civil-petition-sms dbsvr01) joins: the first S scenario.
         # 2026-11-27: vmlink.state(F72-H, civil-petition 66 hypervisor) joins: the first 66-side executor a scenario uses.
+        # 2026-11-27: vmdb.lock(F81-R, civil-petition-sms dbsvr01, mode drop-index) joins.
         self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress", "router.config",
-                                        "vmhost.stress", "vmlink.state"})
+                                        "vmhost.stress", "vmlink.state", "vmdb.lock"})
         # A node executor no scenario uses yet is checked with a contract of its own shape, as long as
         # the registry lets it run on a node. Once a scenario uses it, the catalog check above takes over.
         node_locations = {lid for lid, loc in self.LOCATIONS.items() if loc.get("node")}
@@ -7738,6 +7742,81 @@ class SmsVmExecutorTests(unittest.TestCase):
         _, stdin = self.invocation("vm.service", params)
         self.assertIn(b'op_ssh=(ssh -tt -n -F none -i "$keys/t4-operator"', stdin)
         self.assertIn(b'-o "UserKnownHostsFile=$keys/known_hosts_civil-petition-sms" -o ConnectTimeout=10 -o ServerAliveInterval=15', stdin)
+
+    def test_s_index_drop_goes_the_operator_way_and_is_built_again(self) -> None:
+        """vmdb.lock mode drop-index (F81-R): preflight refuses while the reads through the index would fit in the
+        cores; the operator logs in and drops the constraint with sudo -u postgres psql (the auth.log COMMAND line is the
+        cause trace); cleanup has the operator build the same definition again, root builds what is left, and the guard
+        builds it when cleanup never comes."""
+        lock = self.module("vmdb.lock")
+        params = json.loads(json.dumps(lock.CONTRACTS["F81-R"]))
+        env = {**self.env, "DB_CORES": "4"}
+        call = lambda action: vm_sandbox.runner_call(lock, "vmdb.lock", params, action, env)  # noqa: E731
+        vm_sandbox.master(self.tmp, "192.168.133.31")
+        # A quiet hour: the index is barely read, so the change would not hurt. Refused before anything changes.
+        rc, _, err = call("preflight")
+        self.assertEqual(rc, 1)
+        self.assertIn("would not fill the cores", err)
+        self.assertFalse([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")])
+        # A busy hour: about a thousand reads in the probe window.
+        env["FAKE_IDX_STEP"] = "1000"
+        rc, _, err = call("preflight")
+        self.assertEqual(rc, 0, err)
+        self.assertRegex(err, r"demand \d+ of 4800 milli-cores \(4 cores x 120 %\)")
+        rc, _, err = call("run")
+        self.assertEqual(rc, 0, err)
+        login = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")][0]
+        self.assertTrue(login.startswith("login sysop@192.168.133.31 bind=192.168.122.21 tty=yes "), login)
+        self.assertEqual((self.tmp / "index-present").read_text().strip(), "0")
+        self.assertEqual(vm_sandbox.logged(self.tmp, "sudo-syslog")[-1],
+                         f"sysop : TTY=pts/0 ; PWD={self.tmp / 'home'} ; USER=postgres ; "
+                         "COMMAND=psql -X -d petition -c ALTER TABLE petition DROP CONSTRAINT petition_receipt_no_key")
+        # The guard is armed with the catalog's definition before the change; it never names the operator.
+        undo = Path(self.env["OPSJOB_STATE_ROOT"]) / "ddl-petition_receipt_no_key.undo"
+        self.assertIn("ADD\\ CONSTRAINT\\ petition_receipt_no_key\\ UNIQUE\\ \\(receipt_no\\)", undo.read_text())
+        self.assertNotIn("sysop", undo.read_text())
+        self.assertEqual(call("run")[0], 1)  # idempotent: the index is gone, the run refuses
+        rc, _, err = call("cleanup")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(vm_sandbox.logged(self.tmp, "sudo-syslog")[-1],
+                         f"sysop : TTY=pts/0 ; PWD={self.tmp / 'home'} ; USER=postgres ; COMMAND=psql -X -d petition -c "
+                         "ALTER TABLE petition ADD CONSTRAINT petition_receipt_no_key UNIQUE (receipt_no)")
+        self.assertEqual((self.tmp / "index-present").read_text().strip(), "1")
+        self.assertEqual(call("recovery")[0], 0)
+        self.assertEqual(call("cleanup")[0], 0)  # nothing left: no operator login
+        self.assertEqual(len([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]), 2)
+        # Cleanup without the operator: root builds it again.
+        self.assertEqual(call("run")[0], 0)
+        (self.tmp / "operator-down").touch()
+        rc, _, err = call("cleanup")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("the executor takes the change back", err)
+        self.assertEqual(call("recovery")[0], 0)
+        (self.tmp / "operator-down").unlink()
+        # Self-recovery: dropped, the connection lost, the guard (root) builds the same definition again.
+        self.assertEqual(call("run")[0], 0)
+        self.assertEqual(node_guard_fakes.fire(self.env, "ddl-petition_receipt_no_key", extra_env=env).returncode, 0)
+        self.assertEqual((self.tmp / "index-present").read_text().strip(), "1")
+        self.assertEqual(call("recovery")[0], 0)
+
+    def test_s_index_drop_parameters(self) -> None:
+        lock = self.module("vmdb.lock")
+        contract = lock.CONTRACTS["F81-R"]
+        self.assertEqual(lock.check_parameters(contract), ["petition", "petition_receipt_no_key", "120", "6"])
+        # The lock mode's parameters and arguments are as before.
+        self.assertEqual(lock.check_parameters(self.params("vmdb.lock"))[3:],
+                         ["lock", "LOCK TABLE petition IN ACCESS EXCLUSIVE MODE", "1", "300"])
+        drop = lambda **c: {**contract, **c}  # noqa: E731
+        self.refused_because("vmdb.lock", drop(mode="truncate"), "mode must be one of")
+        self.refused_because("vmdb.lock", drop(index="Petition_Key"), "lowercase PostgreSQL identifier")
+        self.refused_because("vmdb.lock", drop(index="petition_test_idx"), "must not carry the word test")
+        self.refused_because("vmdb.lock", drop(table="pg_class"), "table must be one of")
+        self.refused_because("vmdb.lock", drop(load_pct=80), "load_pct must be an integer between 100 and 400")
+        self.refused_because("vmdb.lock", drop(host="192.168.133.21", node="wassvr01"), "not a db VM")
+        self.refused_because("vmdb.lock", {**drop(), "runtime_seconds": 300}, "parameters must be exactly")
+        _, stdin = self.invocation("vmdb.lock", contract)
+        self.assertIn(b"op_session", stdin)
+        self.assertIn(b'"$pg_setpriv" --reuid=postgres', stdin)
 
     def test_t_paths_never_read_the_s_inventory(self) -> None:
         """Review rv-st4s M: with no S inventory where the runner mounts it, T's executors, operator sessions and decoys

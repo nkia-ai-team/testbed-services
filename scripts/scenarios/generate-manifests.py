@@ -83,6 +83,9 @@ PROFILE_PREFLIGHTS = {
     "vmhost.stress": "host-placement-and-oob-recovery",
     # A VM NIC's link is set back up on 66 through the forced-command helper (QMP), apart from every guest network (F72-H).
     "vmlink.state": "network-oob-recovery",
+    # The database VM's DDL (mode drop-index, F81-R): the inverse is one statement, the definition read from the catalog
+    # before the change and kept for the guard, run over the management NIC.
+    "vmdb.lock": "db-inverse-ddl-ready",
     # The inverse of removing node images is loading the same images (same image IDs) back
     # from 109 docker over SSH, after which the restarted Deployment must have its pod again.
     "host.image": "kubernetes-recovery-capacity",

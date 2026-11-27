@@ -67,6 +67,15 @@
       "requested_at": "2026-11-27",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F81-R",
+      "reason": "new",
+      "note": "새 테스트베드 첫 시나리오, 흔적 표 실측과 119 보강 뒤 녹화(지휘 세션 판단). 순서: 앱 DB 기다림 상한 3초(petition-context.xml)가 wassvr01, wassvr02 에 적용되고 재기준선이 끝난 것을 지휘 세션이 확인한 뒤에만 집어 간다(옛 10초 설정이면 신청이 10초를 넘겨 entry_status 0 필수 중단에 걸린다, 설계 시트 §9 모의). 시각: KST 13~19시(상주 부하 26 rps 이상)에 시작한다. preflight 문턱(조회 빈도 x 한 번 읽기 시간 ≥ 코어 x 120%)은 약 11~21시에 통과하지만 측정이 약 ±20% 흔들려 여유를 둔다. 한가한 시간에 집히면 preflight 가 주입 전에 거절하고 resume 한 번이나 재실행 세 번 뒤 hold 가 된다",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-11-27",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }

@@ -14,6 +14,7 @@ db01's local server log (§6-4).
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from executor_common import ExecutorError
@@ -83,4 +84,118 @@ apply() {
   unit_active
 }
 remove() { unit_stop; end_backends; }
+'''
+
+
+# vmdb.lock mode drop-index (an operator's DDL, design 6-1 change cause through the operator path, 6-2 Q35): the operator
+# logs in and drops one index of an application table with `sudo -u postgres psql` (ALTER TABLE ... DROP CONSTRAINT when a
+# constraint owns the index). The sudo COMMAND= line in auth.log is the change's own trace. The undo builds the same
+# definition again, read from the catalog right before the change (pg_get_constraintdef or pg_get_indexdef), so the
+# undo cannot drift from what the server had.
+#
+# Preflight measures whether the change will hurt (principle 9): how often the application reads through the index now
+# (the index's idx_scan over a few seconds) times what one read costs without it (one serial full scan of the table with
+# the index's first column compared, timed), against the server's cores. Below the contract's percent the run is refused:
+# at a quiet hour the scans fit in the cores and only slow the reads a little.
+INDEX_NAME = re.compile(r"^[a-z][a-z0-9_]{2,62}$")
+PROBE_SECONDS = 6
+
+
+def index_name(value: Any) -> str:
+    if not isinstance(value, str) or not INDEX_NAME.fullmatch(value):
+        raise ExecutorError("index must be a lowercase PostgreSQL identifier")
+    words = set(re.split(r"_", value))
+    for word in vm.FORBIDDEN_WORDS:
+        if word in words or (len(word) > 3 and word in value):
+            raise ExecutorError(f"index must not carry the word {word}")
+    return value
+
+
+# set -- <act> <table> <index> <load percent> <probe seconds>
+DDL_BODY = vm.OPERATOR_FUNCTIONS + br'''act="$1"; table="$2"; index="$3"; load_pct="$4"; probe="$5"
+job="ddl-$index"
+db="${PETITION_DB:-petition}"
+pg_setpriv="${PG_SETPRIV:-setpriv}"
+state_root="${OPSJOB_STATE_ROOT:-/var/lib/opsjobs}"
+deffile="$state_root/$job.sql"
+as_postgres() { "$pg_setpriv" --reuid=postgres --regid=postgres --init-groups --reset-env -- "$@"; }
+pq() { as_postgres psql -X -q -At -d "$db" -c "$1"; }
+# The index, valid, on the contract's table (a constraint's index included).
+present() {
+  [[ "$(pq "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = '$index' AND i.indrelid = '$table'::regclass AND i.indisvalid")" == 1 ]]
+}
+# The statement that builds it again: the owning constraint's when there is one, else the index's own.
+definition() {
+  pq "SELECT coalesce((SELECT format('ALTER TABLE %s ADD CONSTRAINT %I %s', con.conrelid::regclass, con.conname, pg_get_constraintdef(con.oid)) FROM pg_constraint con WHERE con.conindid = c.oid AND con.conrelid = '$table'::regclass), pg_get_indexdef(c.oid)) FROM pg_class c WHERE c.relname = '$index' AND c.relkind = 'i'"
+}
+owned_by_constraint() {
+  [[ "$(pq "SELECT count(*) FROM pg_constraint WHERE conname = '$index' AND conrelid = '$table'::regclass")" == 1 ]]
+}
+state() {
+  if present; then echo default; return 0; fi
+  if [[ -s "$deffile" ]]; then echo ours; return 0; fi
+  echo missing
+}
+# One serial full read of the table comparing the index's first column, the way a read that lost the index runs.
+scan_ms() {
+  local col t0 t1
+  col=$(pq "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0] JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = '$index'")
+  [[ -n "$col" ]] || { echo "cannot read the first column of $index" >&2; return 1; }
+  t0=$(date +%s%N)
+  pq "SET max_parallel_workers_per_gather = 0; SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SELECT count(*) FROM $table WHERE $col::text = ''" >/dev/null
+  t1=$(date +%s%N)
+  echo $(( (t1 - t0) / 1000000 ))
+}
+reads() { pq "SELECT coalesce(sum(idx_scan), 0) FROM pg_stat_user_indexes WHERE indexrelname = '$index'"; }
+check() {
+  local a b ms t0 t1 cores need have
+  command -v psql >/dev/null
+  [[ "$(pq 'SELECT 1')" == 1 ]] || { echo "psql cannot reach $db" >&2; exit 1; }
+  if [[ ! -s "$deffile" ]] && ! present; then echo "$index is not on $table" >&2; exit 1; fi
+  if ! present; then return 0; fi
+  if [[ -z "$op_home" || ! -d "$op_home" ]]; then echo "no home for $operator" >&2; exit 1; fi
+  cores="${DB_CORES:-$(nproc)}"
+  t0=$(date +%s%N); a=$(reads)
+  ms=$(scan_ms)
+  t1=$(date +%s%N); sleep "$(awk -v p="$probe" -v d="$(( (t1 - t0) / 1000000 ))" 'BEGIN { s = p - d / 1000; if (s < 0) s = 0; printf "%.2f", s }')"
+  b=$(reads); t1=$(date +%s%N)
+  # demand in milli-cores: reads per second x one scan in ms; it has to reach cores x load percent.
+  have=$(( (b - a) * ms * 1000000000 / (t1 - t0) ))
+  need=$(( cores * 10 * load_pct ))
+  echo "reads $(( b - a )) in $(( (t1 - t0) / 1000000 )) ms, one scan ${ms} ms, demand ${have} of ${need} milli-cores (${cores} cores x ${load_pct} %)" >&2
+  if (( have < need )); then echo "the reads through $index would not fill the cores now; try at a busier hour" >&2; exit 1; fi
+}
+prepare() {
+  mkdir -p "$state_root"; chmod 700 "$state_root"
+  definition >"$deffile.tmp"
+  [[ -s "$deffile.tmp" ]] || { echo "cannot read the definition of $index" >&2; exit 1; }
+  mv -T "$deffile.tmp" "$deffile"
+  boot_files+=("$deffile")
+}
+undo_body() {
+  local def
+  def=$(cat "$deffile")
+  printf 'if [[ "$(%q --reuid=postgres --regid=postgres --init-groups --reset-env -- psql -X -q -At -d %q -c %q)" != 1 ]]; then\n' \
+    "$pg_setpriv" "$db" "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = '$index' AND i.indisvalid"
+  printf '  %q --reuid=postgres --regid=postgres --init-groups --reset-env -- psql -X -q -d %q -c %q\n' "$pg_setpriv" "$db" "$def"
+  printf 'fi\n'
+  printf 'rm -f %q\n' "$deffile"
+}
+apply() { echo "an operator change goes through the operator session" >&2; exit 2; }
+# What is left after the operator's undo (or all of it when the operator session could not run): root builds it again.
+remove() {
+  if ! present && [[ -s "$deffile" ]]; then pq "$(cat "$deffile")"; fi
+  if present; then rm -f "$deffile"; fi
+}
+# The operator's commands: psql as the database's own account, one statement each.
+op_apply_script() {
+  if owned_by_constraint; then
+    op_line sudo -u postgres psql -X -d "$db" -c "ALTER TABLE $table DROP CONSTRAINT $index"
+  else
+    op_line sudo -u postgres psql -X -d "$db" -c "DROP INDEX $index"
+  fi
+}
+op_remove_script() {
+  if ! present && [[ -s "$deffile" ]]; then op_line sudo -u postgres psql -X -d "$db" -c "$(cat "$deffile")"; fi
+}
 '''

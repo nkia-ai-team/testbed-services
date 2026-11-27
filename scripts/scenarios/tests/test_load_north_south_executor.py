@@ -89,6 +89,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "vmhost.stress",
                 # 2026-11-27: F72-H — 66 하이퍼바이저 도우미로 라우터 rt-core01 의 DB 쪽 NIC(VM 201 net3) 링크 내리기와 올리기(QMP set_link).
                 "vmlink.state",
+                # 2026-11-27: F81-R — SMS 전용 민원 포털 DB 서버 dbsvr01 에서 운영자가 sudo -u postgres psql 로 유일 제약 지우기와 같은 정의로 다시 만들기.
+                "vmdb.lock",
             },
         )
 

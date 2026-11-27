@@ -121,7 +121,8 @@
     "F69-P",
     "F72-P",
     "F80-P",
-    "F72-H"
+    "F72-H",
+    "F81-R"
   ],
   "controllers": {
     "F01-R": {
@@ -28572,6 +28573,175 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 은 66 도우미가 QMP 로 라우터 ens21 링크를 다시 올린다. 라우터 systemd-networkd 가 캐리어를 다시 얻으며 DB 망 주소와 경로를 되살리면 새 연결이 맺어지고, 붙잡혀 있던 열린 연결도 TCP 재전송이 닿으며 풀려난다. entry_status 200 은 로그인이 풀렸던 가상 사용자가 다시 로그인한 뒤의 첫 신청이다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F81-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "20m",
+      "preflight": [
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health",
+        "vm-sms-entry-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          },
+          {
+            "check": "vm-sms-entry-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "vmdb.lock",
+        "companion_refs": [],
+        "approved_profile_id": "vmdb.lock",
+        "levels": [
+          {
+            "id": "approved-fixed-f81-r",
+            "parameters": {
+              "host": "192.168.133.31",
+              "node": "dbsvr01",
+              "mode": "drop-index",
+              "table": "petition",
+              "index": "petition_receipt_no_key",
+              "load_pct": 120
+            },
+            "min_hold": "10m",
+            "settle": "60s",
+            "timeout": "15m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "civil-petition-sms"
+          },
+          "_note": "SMS 전용 민원 포털 상주 부하기(loadgen VM)의 마지막 민원 신청 상태. 신청은 접수번호 유일 제약과 무관한 INSERT 라 풀에서 연결을 얻으면 몇 ms~수백 ms 안에 200, 3초(maxWait) 안에 못 얻으면 500 이다. 모의(웹 서버 작업자 150 포함)에서 신청은 길어야 약 7초라 0(10초 응답 없음)은 나지 않는다. 앱 DB 기다림 상한이 10초(3초 설정 적용 전)면 신청이 10초를 넘겨 0 이 잦아진다(같은 모의 30초 창 25개 중 16개)",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "전역 회복 조건(다른 테스트베드 진입). 이 시나리오는 건드리지 않는다"
+        },
+        {
+          "id": "lookup_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "parameters": {
+            "domain": "civil-petition-sms"
+          },
+          "_note": "상주 부하의 접수번호 조회(단계 lookup, 여정 30%, websvr01 → wassvr01, wassvr02 → dbsvr01) 비정상 비율. 이 시나리오에서 표 전체를 읽게 되는 바로 그 경로다. 쿠키 단지 없이 부르는 공개 경로라 장애 중 로그인 상태가 풀려도 사라지지 않는다. 평시 약 0.01(없는 번호 1% 고정이 404). 포화 뒤 조회는 DB 에서 10초를 넘겨 부하기가 포기하거나(0) 풀 3초 대기 뒤 503 이다",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "parameters": {
+            "domain": "civil-petition-sms"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "lookups-failing",
+            "observation": "lookup_nonok_rate",
+            "op": "gte",
+            "value": 0.5,
+            "_note": "접수번호 조회가 표 전체 읽기로 느려져 부하기 10초 시간 초과(0)나 풀 대기 3초 뒤 503"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "운영자가 receipt_no 의 유일 제약(그 색인이 조회의 유일한 길)을 지우면 조회마다 민원 표 약 200만 행을 읽는다(한 번에 코어 하나 약 0.8초, 104 docker 측정). 실행기 preflight 가 조회 빈도 x 한 번 읽기 시간이 코어 4개의 120% 이상일 때만 주입한다(바쁜 시간, 상주 부하 21 rps 이상). 그러면 수십 초 안에 DB CPU 가 차고 풀 40 이 표 읽기로 차서 조회 비정상 비율이 1 에 가깝다(모의). 신청 단계는 성공 조건에 쓰지 않는다: 장애 중 로그인이 503 으로 실패하면 로그인 상태가 풀린 가상 사용자는 신청을 보내지 않는다. min_hold 10m 은 피해와 원인 흔적(auth.log 감시의 운영자 sudo psql 줄, CPU 100%, 부하 평균, postgres 프로세스 CPU, 연결 수, 느린 요청 WARN 과 풀 고갈 ERROR)이 쌓일 길이다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 2.0,
+            "_note": "상주 부하 저점(KST 4시) 목표 5rps 의 40%. 부하가 실제로 끊겼을 때만 발화한다(부하기가 maxVUs 150 에 닿아 반복을 버려도 피크 모의에서 달성 약 20 rps 이상)"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "entry-recovered",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "lookups-recovered",
+            "observation": "lookup_nonok_rate",
+            "op": "lt",
+            "value": 0.1,
+            "_note": "평시 창별 비정상 비율은 없는 번호 1% 때문에 저점 5rps 30초 창에서 최대 약 0.055(모의)라 0.1 로 둔다. 장애 중 값은 1.0"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 은 운영자가 지운 것과 같은 정의(ALTER TABLE petition ADD CONSTRAINT petition_receipt_no_key UNIQUE (receipt_no))로 제약을 다시 만든다(운영자 세션, 남으면 실행기 root). ACCESS EXCLUSIVE 잠금을 얻으려 진행 중인 표 읽기가 끝나기를 기다리는 동안 새 질의가 그 뒤에 서므로 수 초~십수 초 포털이 더 멈췄다가(104 docker 포화 중 6초) 색인이 생기면 다음 요청부터 정상이다. entry_status 200 은 로그인이 풀렸던 가상 사용자가 다시 로그인한 뒤의 첫 신청이다"
       },
       "cleanup": {
         "required": true,

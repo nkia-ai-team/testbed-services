@@ -273,7 +273,8 @@ class StageTests(unittest.TestCase):
         # 2026-11-25: 4 → 5. F72-P(민원 포털 라우터에서 운영자가 DB 포트 허용 목록을 좁히다 WAS 망을 빠뜨림) 후보 추가.
         # 2026-11-25: 5 → 6. F80-P(SMS 전용 민원 포털 DB 서버 작업이 메모리를 다 써 커널 OOM 이 PostgreSQL 을 죽임) 후보 추가.
         # 2026-11-27: 6 → 7. F72-H(민원 포털 라우터 DB 쪽 포트 링크 끊김으로 WAS 가 DB 에 닿지 못함) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 7)
+        # 2026-11-27: 7 → 8. F81-R(SMS 전용 민원 포털 DB 서버에서 운영자가 접수번호 유일 제약을 지워 DB CPU 100%) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 8)
 
 
 class RecordingQueueTests(unittest.TestCase):

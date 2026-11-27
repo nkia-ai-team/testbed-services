@@ -6012,10 +6012,26 @@
         "petition-db01",
         "petition-sms-dbsvr01"
       ],
-      "live_supported": false,
+      "live_supported": true,
       "default_queries": [
         "http.entry_health"
-      ]
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F81-R"
+        ]
+      },
+      "scenario_parameters": {
+        "F81-R": {
+          "host": "192.168.133.31",
+          "node": "dbsvr01",
+          "mode": "drop-index",
+          "table": "petition",
+          "index": "petition_receipt_no_key",
+          "load_pct": 120
+        }
+      },
+      "scenario_levels": {}
     },
     "vmdb.workload": {
       "executor": "profiles/vmdb_workload_executor.py",

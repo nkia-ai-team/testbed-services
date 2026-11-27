@@ -15,7 +15,7 @@ state as files and log every call:
 - setpriv, sudo: setpriv (the database executors' account switch) logs and runs; sudo logs its syslog line.
 - systemd-run, systemctl (UNIT_SYSTEMD_RUN, UNIT_SYSTEMCTL): named units and services; a unit's
   command runs in the background and the unit is active while it lives.
-- psql, conntrack, sysctl: just enough to answer the executors' queries.
+- psql, conntrack, sysctl: just enough to answer the executors' queries (vmdb.lock drop-index: index-present, idx-scans).
 The U8 guard keeps its own fake systemd (node_guard_fakes).
 """
 from __future__ import annotations
@@ -99,11 +99,13 @@ printf '%s\n' "${@: -1}" >>"$VM_SANDBOX/curl-log"
 
 SUDO = r'''#!/usr/bin/env bash
 [[ "$1" == -n ]] && shift
+# sudo -u <account> (the operator's psql as the database's own account): logged as USER=<account>.
+as=root; if [[ "$1" == -u ]]; then as="$2"; shift 2; fi
 # The operator's sudo on a pty reads the terminal (use_pty relays it): it eats whatever was typed ahead.
 if [[ -n "${FAKE_SUDO_READS_TTY:-}" ]]; then while IFS= read -r -t 0.2 _ </dev/tty 2>/dev/null; do :; done; fi
 printf 'sudo %s\n' "$*" >>"$VM_SANDBOX/sudo-log"
 # The line sudo itself sends to syslog (auth facility), with the working directory it would log.
-printf '%s : TTY=%s ; PWD=%s ; USER=root ; COMMAND=%s\n' "${FAKE_SUDO_USER:-root}" "${FAKE_TTY:-unknown}" "$(pwd)" "$*" >>"$VM_SANDBOX/sudo-syslog"
+printf '%s : TTY=%s ; PWD=%s ; USER=%s ; COMMAND=%s\n' "${FAKE_SUDO_USER:-root}" "${FAKE_TTY:-unknown}" "$(pwd)" "$as" "$*" >>"$VM_SANDBOX/sudo-syslog"
 exec "$@"
 '''
 
@@ -162,6 +164,16 @@ case "$sql" in
   *"count(*) FROM pg_stat_activity"*) cat "$VM_SANDBOX/backends" 2>/dev/null || echo 0 ;;
   *pg_terminate_backend*) echo 0 >"$VM_SANDBOX/backends"; echo 0 ;;
   *pg_sleep*) echo 1 >"$VM_SANDBOX/backends"; sleep 60 ;;
+  # vmdb.lock mode drop-index: one index whose presence is the file index-present (absent = present), its owning
+  # constraint, its first column, a read counter that grows by FAKE_IDX_STEP per read, and a short full scan.
+  *indisvalid*) cat "$VM_SANDBOX/index-present" 2>/dev/null || echo 1 ;;
+  *pg_get_indexdef*) echo "ALTER TABLE petition ADD CONSTRAINT petition_receipt_no_key UNIQUE (receipt_no)" ;;
+  *"FROM pg_constraint WHERE conname"*) echo 1 ;;
+  *a.attname*) echo receipt_no ;;
+  *idx_scan*) n=$(cat "$VM_SANDBOX/idx-scans" 2>/dev/null || echo 0); n=$(( n + ${FAKE_IDX_STEP:-0} )); echo "$n" >"$VM_SANDBOX/idx-scans"; echo "$n" ;;
+  *enable_indexscan*) sleep 0.05; echo 0 ;;
+  *"DROP CONSTRAINT"*|*"DROP INDEX"*) echo 0 >"$VM_SANDBOX/index-present"; echo "ALTER TABLE" ;;
+  *"ADD CONSTRAINT"*|*"CREATE UNIQUE INDEX"*|*"CREATE INDEX"*) echo 1 >"$VM_SANDBOX/index-present"; echo "ALTER TABLE" ;;
   *) sleep 0.2 ;;
 esac
 '''
